@@ -34,7 +34,8 @@ func (k Keeper) Attest(
 	// This prevents there being two attestations with the same nonce that get 2/3s of the votes
 	// in the endBlocker.
 	lastEventNonce := k.GetLastEventNonceByValidator(ctx, valAddr)
-	if claim.GetEventNonce() != lastEventNonce+1 {
+	claimEventNonce := claim.GetEventNonce()
+	if claimEventNonce != lastEventNonce+1 {
 		return nil, fmt.Errorf(types.ErrNonContiguousEventNonce.Error(), lastEventNonce+1, claim.GetEventNonce())
 	}
 
@@ -43,7 +44,7 @@ func (k Keeper) Attest(
 	if err != nil {
 		return nil, sdkerrors.Wrap(err, "unable to compute claim hash")
 	}
-	att := k.GetAttestation(ctx, claim.GetEventNonce(), hash)
+	att := k.GetAttestation(ctx, claimEventNonce, hash)
 
 	// If it does not exist, create a new one.
 	if att == nil {
@@ -58,8 +59,8 @@ func (k Keeper) Attest(
 	// Add the validator's vote to this attestation
 	att.Votes = append(att.Votes, valAddr.String())
 
-	k.SetAttestation(ctx, claim.GetEventNonce(), hash, att)
-	k.SetLastEventNonceByValidator(ctx, valAddr, claim.GetEventNonce())
+	k.SetAttestation(ctx, claimEventNonce, hash, att)
+	k.SetLastEventNonceByValidator(ctx, valAddr, claimEventNonce)
 
 	return att, nil
 }
@@ -67,15 +68,20 @@ func (k Keeper) Attest(
 // TryAttestation checks if an attestation has enough votes to be applied to the consensus state
 // and has not already been marked Observed, then calls processAttestation to actually apply it to the state,
 // and then marks it Observed and emits an event.
-func (k Keeper) TryAttestation(ctx sdk.Context, att *types.Attestation) {
+// Returns True if claim was observed
+func (k Keeper) TryAttestation(
+	ctx sdk.Context,
+	att *types.Attestation,
+) (bool, error) {
 	claim, err := k.UnpackAttestationClaim(att)
 	if err != nil {
-		panic("could not cast to claim")
+		return false, sdkerrors.Wrap(err, "could not cast to claim")
 	}
 	hash, err := claim.ClaimHash()
 	if err != nil {
-		panic("unable to compute claim hash")
+		return false, sdkerrors.Wrap(err, "unable to compute claim hash")
 	}
+	claimEventNonce := claim.GetEventNonce()
 	// If the attestation has not yet been Observed, sum up the votes and see if it is ready to apply to the state.
 	// This conditional stops the attestation from accidentally being applied twice.
 	if !att.Observed {
@@ -87,7 +93,7 @@ func (k Keeper) TryAttestation(ctx sdk.Context, att *types.Attestation) {
 		for _, validator := range att.Votes {
 			val, err := sdk.ValAddressFromBech32(validator)
 			if err != nil {
-				panic(err)
+				return false, sdkerrors.Wrap(err, "unable to parse validator address")
 			}
 			validatorPower := k.StakingKeeper.GetLastValidatorPower(ctx, val)
 			// Add it to the attestation power's sum
@@ -98,21 +104,22 @@ func (k Keeper) TryAttestation(ctx sdk.Context, att *types.Attestation) {
 				lastEventNonce := k.GetLastObservedEventNonce(ctx)
 				// this check is performed at the next level up so this should never panic
 				// outside of programmer error.
-				if claim.GetEventNonce() != lastEventNonce+1 {
-					panic("attempting to apply events to state out of order")
+				if claimEventNonce != lastEventNonce+1 {
+					return false, sdkerrors.Wrap(err, "attempting to apply events to state out of order")
 				}
-				k.setLastObservedEventNonce(ctx, claim.GetEventNonce())
+				k.setLastObservedEventNonce(ctx, claimEventNonce)
 				k.SetLastObservedEthereumBlockHeight(ctx, claim.GetBlockHeight())
 
 				att.Observed = true
-				k.SetAttestation(ctx, claim.GetEventNonce(), hash, att)
+				k.SetAttestation(ctx, claimEventNonce, hash, att)
 
 				k.processAttestation(ctx, att, claim)
 				k.emitObservedEvent(ctx, att, claim)
 
-				break
+				return att.Observed, nil
 			}
 		}
+		return false, nil
 	} else {
 		// We panic here because this should never happen
 		panic("attempting to process observed attestation")
@@ -299,17 +306,14 @@ func (k Keeper) GetLastObservedEthereumBlockHeight(ctx sdk.Context) types.LastOb
 	store := ctx.KVStore(k.storeKey)
 	bytes := store.Get([]byte(types.LastObservedEthereumBlockHeightKey))
 
-	if len(bytes) == 0 {
-		return types.LastObservedEthereumBlockHeight{
-			CosmosBlockHeight:   0,
-			EthereumBlockHeight: 0,
-		}
-	}
 	height := types.LastObservedEthereumBlockHeight{
 		CosmosBlockHeight:   0,
 		EthereumBlockHeight: 0,
 	}
-	k.cdc.MustUnmarshal(bytes, &height)
+	if len(bytes) != 0 {
+		k.cdc.MustUnmarshal(bytes, &height)
+	}
+
 	return height
 }
 

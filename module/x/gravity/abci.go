@@ -107,6 +107,7 @@ func attestationTally(ctx sdk.Context, k keeper.Keeper) {
 	}
 
 	attmap, keys := k.GetAttestationMapping(ctx)
+	lastObservedNonce := k.GetLastObservedEventNonce(ctx)
 
 	// This iterates over all keys (event nonces) in the attestation mapping. Each value contains
 	// a slice with one or more attestations at that event nonce. There can be multiple attestations
@@ -132,8 +133,16 @@ func attestationTally(ctx sdk.Context, k keeper.Keeper) {
 			// we skip the other attestations and move on to the next nonce again.
 			// If no attestation becomes observed, when we get to the next nonce, every attestation in
 			// it will be skipped. The same will happen for every nonce after that.
-			if nonce == uint64(k.GetLastObservedEventNonce(ctx))+1 {
-				k.TryAttestation(ctx, &att)
+			if nonce != lastObservedNonce+1 {
+				continue
+			}
+
+			observed, err := k.TryAttestation(ctx, &att)
+			if err != nil {
+				panic(err)
+			}
+			if observed {
+				lastObservedNonce = k.GetLastObservedEventNonce(ctx)
 			}
 		}
 	}

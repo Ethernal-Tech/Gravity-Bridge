@@ -9,6 +9,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAttesting(t *testing.T) {
+	input, ctx := SetupFiveValChain(t)
+	k := input.GravityKeeper
+	var lastAtt *types.Attestation
+
+	for i := 0; i < len(OrchAddrs); i++ {
+		// Create msg and Attest
+		msg := types.MsgSendToCosmosClaim{
+			EventNonce:     1,
+			BlockHeight:    0,
+			TokenContract:  TokenContractAddrs[0],
+			Amount:         sdktypes.NewInt(123),
+			EthereumSender: "0xf9613b532673Cc223aBa451dFA8539B87e1F666D",
+			CosmosReceiver: AccAddrs[0].String(),
+			Orchestrator:   OrchAddrs[i].String(),
+		}
+		anyClaim, _ := codectypes.NewAnyWithValue(&msg)
+
+		att, err := k.Attest(ctx, &msg, anyClaim)
+		require.Nil(t, err)
+		require.NotNil(t, att)
+
+		// Save last attestation
+		if i == len(OrchAddrs)-1 {
+			lastAtt = att
+		}
+	}
+
+	// Check if all votes are here
+	require.Equal(t, len(OrchAddrs), len(lastAtt.Votes))
+	require.False(t, lastAtt.Observed)
+
+	// Try to observe attestation
+	observed, err := k.TryAttestation(ctx, lastAtt)
+	require.Nil(t, err)
+	require.True(t, observed)
+	require.True(t, lastAtt.Observed)
+}
+
 func TestGetAndDeleteAttestation(t *testing.T) {
 	input := CreateTestEnv(t)
 	k := input.GravityKeeper
